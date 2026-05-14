@@ -1,44 +1,61 @@
-"""Sink abstractions — destinations for parsed log events."""
+"""Sink implementations for logpipe.
 
+A sink receives parsed log events (plain dicts) and persists or forwards them.
+All sinks share the BaseSink interface: ``write(event)`` and ``flush()``.
+"""
+
+from __future__ import annotations
+
+import io
 import json
 import sys
-from abc import ABC, abstractmethod
-from typing import Any, TextIO
+from pathlib import Path
+from typing import Any, Dict, IO, List, Optional
 
 
-class BaseSink(ABC):
-    """All sinks must implement :meth:`write`."""
+class BaseSink:
+    """Abstract base — subclasses must implement ``write``."""
 
-    @abstractmethod
-    def write(self, event: dict[str, Any]) -> None:
-        """Persist or forward a single structured *event*."""
+    def write(self, event: Dict[str, Any]) -> None:  # pragma: no cover
+        raise NotImplementedError
 
-    def flush(self) -> None:  # noqa: B027  (intentionally empty default)
-        """Optional: flush any internal buffers."""
+    def flush(self) -> None:
+        """Optional flush; no-op by default."""
+
+
+def _serialise(event: Dict[str, Any]) -> str:
+    """Return a compact JSON line for *event*, falling back to str() for
+    values that are not JSON-serialisable."""
+    try:
+        return json.dumps(event, separators=(",", ":"))
+    except (TypeError, ValueError):
+        safe = {k: v if isinstance(v, (str, int, float, bool, type(None))) else str(v)
+                for k, v in event.items()}
+        return json.dumps(safe, separators=(",", ":"))
 
 
 class StdoutSink(BaseSink):
-    """Writes JSON-encoded events to *stream* (default: stdout)."""
+    """Write one JSON line per event to *stdout*."""
 
-    def __init__(self, stream: TextIO | None = None) -> None:
-        self._stream: TextIO = stream or sys.stdout
+    def __init__(self, stream: Optional[IO[str]] = None) -> None:
+        self._stream = stream or sys.stdout
 
-    def write(self, event: dict[str, Any]) -> None:
-        self._stream.write(json.dumps(event, default=str) + "\n")
+    def write(self, event: Dict[str, Any]) -> None:
+        self._stream.write(_serialise(event) + "\n")
 
     def flush(self) -> None:
         self._stream.flush()
 
 
 class FileSink(BaseSink):
-    """Appends JSON-encoded events to a file at *path*."""
+    """Append one JSON line per event to a file on disk."""
 
-    def __init__(self, path: str) -> None:
-        self._path = path
-        self._fh = open(path, "a", encoding="utf-8")  # noqa: SIM115
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+        self._fh = self._path.open("a", encoding="utf-8")
 
-    def write(self, event: dict[str, Any]) -> None:
-        self._fh.write(json.dumps(event, default=str) + "\n")
+    def write(self, event: Dict[str, Any]) -> None:
+        self._fh.write(_serialise(event) + "\n")
 
     def flush(self) -> None:
         self._fh.flush()
@@ -46,18 +63,15 @@ class FileSink(BaseSink):
     def close(self) -> None:
         self._fh.close()
 
-    def __enter__(self) -> "FileSink":
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
-
 
 class MemorySink(BaseSink):
-    """Collects events in-memory — useful for testing."""
+    """Collect events in memory — useful for testing."""
 
     def __init__(self) -> None:
-        self.events: list[dict[str, Any]] = []
+        self.events: List[Dict[str, Any]] = []
 
-    def write(self, event: dict[str, Any]) -> None:
+    def write(self, event: Dict[str, Any]) -> None:
         self.events.append(event)
+
+    def flush(self) -> None:
+        pass  # nothing to flush
